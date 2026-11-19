@@ -4440,28 +4440,10 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
         {
             return;
         }
-        // If any base derives from `Any`, we can't reliably tell whether the method
-        // overrides a concrete parent method, so suppress the check. Gather this
-        // across all bases first so the decision is independent of base order.
-        if bases.iter().any(|parent| {
-            self.get_metadata_for_class(parent.class_object())
-                .has_base_any()
-        }) {
-            return;
-        }
-        for parent in bases.iter() {
-            let parent_cls = parent.class_object();
-            let Some(want_field) =
-                self.get_class_member_with_defining_class(parent_cls, field_name)
-            else {
-                continue;
-            };
-            if want_field.defining_class.is(KnownClass::Object) {
-                continue;
-            }
-            if self.super_method_needs_impl_reason(&want_field).is_some() {
-                continue;
-            }
+        if !self
+            .parent_methods_requiring_super_call(field_name, bases)
+            .is_empty()
+        {
             self.error(
                 errors,
                 range,
@@ -4472,7 +4454,92 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
                     field_name,
                 ),
             );
+        }
+    }
+
+    /// The parent methods named `name` that an override in a class with `bases` is
+    /// expected to call. Methods inherited from `object` and abstract or protocol
+    /// methods without a runtime implementation are left out. If any base derives
+    /// from `Any`, we can't reliably tell whether the method overrides a concrete
+    /// parent method, so the result is empty. That is decided across all bases
+    /// first, so it is independent of base order.
+    fn parent_methods_requiring_super_call<'b>(
+        &'b self,
+        name: &Name,
+        bases: &ClassBases,
+    ) -> Vec<WithDefiningClass<Cow<'b, ClassField>>> {
+        if bases.iter().any(|parent| {
+            self.get_metadata_for_class(parent.class_object())
+                .has_base_any()
+        }) {
+            return Vec::new();
+        }
+        bases
+            .iter()
+            .filter_map(|parent| {
+                self.get_class_member_with_defining_class(parent.class_object(), name)
+            })
+            .filter(|want_field| {
+                !want_field.defining_class.is(KnownClass::Object)
+                    && self.super_method_needs_impl_reason(want_field).is_none()
+            })
+            .collect()
+    }
+
+    /// A stdlib dataclass with `init=True` and no `__init__` of its own gets a
+    /// synthesized `__init__` that only assigns its fields and never calls a parent
+    /// `__init__`. Synthesized fields are not in `class_field_map`, so the check on
+    /// declared methods never sees it; this reports it at the class name instead.
+    pub fn check_missing_super_call_for_synthesized_init(
+        &self,
+        cls: &Class,
+        class_field_map: &SmallMap<Name, &ClassField>,
+        bases: &ClassBases,
+        errors: &ErrorCollector,
+    ) {
+        let Some(dataclass) = self.get_metadata_for_class(cls).dataclass_metadata() else {
             return;
+        };
+        // A declared `__init__` is checked as a method. `__post_init__` is the
+        // documented place to call the parent initializer, so a class that defines
+        // one is trusted to do so.
+        if !dataclass.kws.init
+            || dataclass.is_inherited
+            || !matches!(
+                dataclass.kind,
+                DataclassKind::Dataclass {
+                    is_stdlib_dataclass: true,
+                    ..
+                }
+            )
+            || cls.module_path().is_interface()
+            || class_field_map.contains_key(&dunder::INIT)
+            || class_field_map.contains_key(&dunder::POST_INIT)
+        {
+            return;
+        }
+        // The fields of a dataclass parent are assigned by this class's synthesized
+        // `__init__`, so only a parent `__init__` written by hand goes uncalled.
+        if self
+            .parent_methods_requiring_super_call(&dunder::INIT, bases)
+            .iter()
+            .any(|parent| {
+                self.get_non_synthesized_field_from_current_class_only(
+                    &parent.defining_class,
+                    &dunder::INIT,
+                )
+                .is_some()
+            })
+        {
+            self.error(
+                errors,
+                cls.range(self),
+                ErrorKind::MissingSuperCall,
+                format!(
+                    "The synthesized `__init__` of dataclass `{}` does not call the method of the same name in a parent class",
+                    cls.name(self),
+                ),
+            );
         }
     }
 

@@ -3958,6 +3958,12 @@ impl<'ctx, 'answer, Ans: LookupAnswer> AnswersSolver<'ctx, 'answer, Ans> {
         for (name, field) in class_field_map.iter() {
             self.check_consistent_override_for_field(cls, name, field, class_bases, errors);
         }
+        self.check_missing_super_call_for_synthesized_init(
+            cls,
+            class_field_map,
+            class_bases,
+            errors,
+        );
 
         // If we are inheriting from multiple base types, we should
         // check whether the multiple inheritance is consistent

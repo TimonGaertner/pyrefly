@@ -2198,6 +2198,48 @@ class MissingSuper(Base):
 );
 
 testcase!(
+    test_missing_super_call_dataclass_synthesized_init,
+    TestEnv::new().enable_missing_super_call_error(),
+    r#"
+from dataclasses import dataclass
+
+class Base:
+    def __init__(self) -> None:
+        self.value: int = 1
+
+@dataclass
+class Child(Base):  # E: The synthesized `__init__` of dataclass `Child` does not call the method of the same name in a parent class
+    x: int = 0
+
+@dataclass(init=False)
+class NoInit(Base):
+    x: int = 0
+
+@dataclass
+class OwnInit(Base):
+    def __init__(self) -> None:  # E: Method `OwnInit.__init__` does not call the method of the same name in a parent class
+        pass
+
+@dataclass
+class CallsBaseInPostInit(Base):
+    x: int = 0
+    def __post_init__(self) -> None:
+        super().__init__()
+
+@dataclass
+class DataBase:
+    x: int
+
+@dataclass
+class DataChild(DataBase):
+    y: int
+
+class Plain(Child):
+    pass
+    "#,
+);
+
+testcase!(
     test_missing_super_call_disabled_by_default,
     r#"
 class Base:
